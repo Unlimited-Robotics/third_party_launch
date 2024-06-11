@@ -24,10 +24,17 @@ class Shutdown(Event):
 
     name = 'launch.events.Shutdown'
 
-    def __init__(self, *, reason: Text = 'reason not given', due_to_sigint: bool = False) -> None:
+    def __init__(
+                self, 
+                *, 
+                reason: Text = 'reason not given', 
+                due_to_sigint: bool = False,
+                due_to_sigterm: bool = False,
+            ) -> None:
         """Create a Shutdown event."""
         self.__reason = reason
         self.__due_to_sigint = due_to_sigint
+        self.__due_to_sigterm = due_to_sigterm
 
     @property
     def reason(self):
@@ -38,3 +45,8 @@ class Shutdown(Event):
     def due_to_sigint(self):
         """Getter for due_to_sigint."""
         return self.__due_to_sigint
+
+    @property
+    def due_to_sigterm(self):
+        """Getter for due_to_sigterm."""
+        return self.__due_to_sigterm

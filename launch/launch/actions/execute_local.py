@@ -14,6 +14,7 @@
 
 """Module for the ExecuteLocal action."""
 
+import os
 import asyncio
 import io
 import logging
@@ -216,6 +217,9 @@ class ExecuteLocal(Action):
 
         self.__executed = False
 
+        self.__detached_mode = ('DETACHED_MODE' in os.environ) and (os.environ['DETACHED_MODE'].lower() == 'true')
+
+
     @property
     def process_description(self):
         """Getter for process_description."""
@@ -241,7 +245,7 @@ class ExecuteLocal(Action):
             return self.__on_exit
         return []
 
-    def _shutdown_process(self, context, *, send_sigint):
+    def _shutdown_process(self, context, *, send_sigint, send_sigterm=False):
         if self.__shutdown_future is None or self.__shutdown_future.done():
             # Execution not started or already done, nothing to do.
             return None
@@ -262,7 +266,7 @@ class ExecuteLocal(Action):
             context.register_event_handler(
                 OnProcessStart(
                     on_start=lambda event, context:
-                    self._shutdown_process(context, send_sigint=send_sigint)))
+                    self._shutdown_process(context, send_sigint=send_sigint, send_sigterm=send_sigterm)))
             return None
 
         self.__shutdown_future.set_result(None)
@@ -270,8 +274,11 @@ class ExecuteLocal(Action):
         # Otherwise process is still running, start the shutdown procedures.
         context.extend_locals({'process_name': self.process_details['name']})
         actions_to_return = self.__get_shutdown_timer_actions()
-        if send_sigint:
-            actions_to_return.append(self.__get_sigint_event())
+        if self.__detached_mode:
+            if send_sigint:
+                actions_to_return.append(self.__get_sigint_event())
+            elif send_sigterm:
+                actions_to_return.append(self.__get_sigterm_event())
         return actions_to_return
 
     def __on_shutdown_process_event(
@@ -420,9 +427,11 @@ class ExecuteLocal(Action):
 
     def __on_shutdown(self, event: Event, context: LaunchContext) -> Optional[SomeActionsType]:
         due_to_sigint = cast(Shutdown, event).due_to_sigint
+        due_to_sigterm = cast(Shutdown, event).due_to_sigterm
         return self._shutdown_process(
             context,
-            send_sigint=not due_to_sigint or context.noninteractive,
+            send_sigint=due_to_sigint,
+            send_sigterm=due_to_sigterm,
         )
 
     def __get_shutdown_timer_actions(self) -> List[Action]:
@@ -477,6 +486,12 @@ class ExecuteLocal(Action):
     def __get_sigint_event(self):
         return EmitEvent(event=SignalProcess(
             signal_number=signal.SIGINT,
+            process_matcher=matches_action(self),
+        ))
+
+    def __get_sigterm_event(self):
+        return EmitEvent(event=SignalProcess(
+            signal_number=signal.SIGTERM,
             process_matcher=matches_action(self),
         ))
 
