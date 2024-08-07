@@ -23,6 +23,8 @@ import platform
 import signal
 import threading
 import traceback
+import pathlib
+import filelock
 from typing import Any  # noqa: F401
 from typing import Callable
 from typing import cast
@@ -218,6 +220,18 @@ class ExecuteLocal(Action):
         self.__executed = False
 
         self.__detached_mode = ('DETACHED_MODE' in os.environ) and (os.environ['DETACHED_MODE'].lower() == 'true')
+
+        if ('THIS_MAIN_LAUNCHFILE' in os.environ) and (os.environ['THIS_MAIN_LAUNCHFILE'].lower() == 'true'):
+            self.__this_main_launchfile = True
+            try:
+                self.__path_nodes_status_folder = pathlib.Path(os.environ['NODES_STATUS_PATH'])
+                self.__lock_nodes_status = filelock.FileLock(os.environ['NODES_STATUS_LOCK'], timeout=0.5)
+            except KeyError as e:
+                raise RuntimeError(f'This is the main launchfile, but variable {e} not found.')
+        else:
+            self.__this_main_launchfile = False
+            self.__path_nodes_status_folder = None
+            self.__lock_nodes_status = None
 
 
     @property
@@ -507,6 +521,32 @@ class ExecuteLocal(Action):
         # Signal that we're done to the launch system.
         self.__completed_future.set_result(None)
 
+    def _update_node_status(self, status:str, pid=None, retcode=None):
+        # pid==None:     not update
+        # pid==0:        Clear
+        # retcode==None: Clear
+        path_status = self.__path_nodes_status_folder / f'{self.name}.status'
+        path_pid = self.__path_nodes_status_folder / f'{self.name}.pid'
+        path_retcode = self.__path_nodes_status_folder / f'{self.name}.retcode'
+        try:
+            with self.__lock_nodes_status:
+                with open(path_status, 'w') as f:
+                    f.write(str(status))
+                with open(path_pid, 'w') as f:
+                    if pid is None:
+                        pass
+                    elif pid==0:
+                        f.write('')
+                    else:
+                        f.write(str(pid))
+                with open(path_retcode, 'w') as f:
+                    if retcode is None:
+                        f.write('')
+                    else:
+                        f.write(str(retcode))
+        except filelock.Timeout:
+            self.__logger.warn('Node status lock file is locked (possible deadlock).')
+
     class __ProcessProtocol(AsyncSubprocessProtocol):
         def __init__(
             self,
@@ -516,6 +556,7 @@ class ExecuteLocal(Action):
             **kwargs
         ) -> None:
             super().__init__(**kwargs)
+            self.__action = action
             self.__context = context
             self.__process_event_args = process_event_args
             self.__logger = launch.logging.get_logger(process_event_args['name'])
@@ -524,6 +565,7 @@ class ExecuteLocal(Action):
             self.__logger.info(
                 'process started with pid [{}]'.format(transport.get_pid()),
             )
+            self.__action._update_node_status('RUNNING', pid=transport.get_pid())
             super().connection_made(transport)
             self.__process_event_args['pid'] = transport.get_pid()
 
@@ -541,6 +583,7 @@ class ExecuteLocal(Action):
         cmd = process_event_args['cmd']
         cwd = process_event_args['cwd']
         env = process_event_args['env']
+
         if self.__log_cmd:
             self.__logger.info("process details: cmd='{}', cwd='{}', custom_env?={}".format(
                 ' '.join(filter(lambda part: part.strip(), cmd)),
@@ -582,6 +625,7 @@ class ExecuteLocal(Action):
         await context.emit_event(ProcessStarted(**process_event_args))
 
         returncode = await self._subprocess_protocol.complete
+        self._update_node_status('STOPPED', retcode=returncode)
         if returncode == 0:
             self.__logger.info('process has finished cleanly [pid {}]'.format(pid))
         else:
