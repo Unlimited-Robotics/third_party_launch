@@ -105,6 +105,7 @@ class ExecuteLocal(Action):
         ]] = None,
         respawn: Union[bool, SomeSubstitutionsType] = False,
         respawn_delay: Optional[float] = None,
+        affects_health: bool = True,
         **kwargs
     ) -> None:
         """
@@ -218,18 +219,19 @@ class ExecuteLocal(Action):
         self.__stderr_buffer = io.StringIO()
 
         self.__executed = False
+        self.__affects_health = affects_health
 
         self.__detached_mode = ('DETACHED_MODE' in os.environ) and (os.environ['DETACHED_MODE'].lower() == 'true')
 
-        if ('THIS_MAIN_LAUNCHFILE' in os.environ) and (os.environ['THIS_MAIN_LAUNCHFILE'].lower() == 'true'):
-            self.__this_main_launchfile = True
+        if ('THIS_MAIN_LAUNCHFILE' in os.environ) and (os.environ['THIS_MAIN_LAUNCHFILE'].lower() == 'true') and self.__affects_health:
+            self.__write_status_file = True
             try:
                 self.__path_nodes_status_folder = pathlib.Path(os.environ['NODES_STATUS_PATH'])
                 self.__lock_nodes_status = filelock.FileLock(os.environ['NODES_STATUS_LOCK'], timeout=0.5)
             except KeyError as e:
                 raise RuntimeError(f'This is the main launchfile, but variable {e} not found.')
         else:
-            self.__this_main_launchfile = False
+            self.__write_status_file = False
             self.__path_nodes_status_folder = None
             self.__lock_nodes_status = None
 
@@ -525,27 +527,28 @@ class ExecuteLocal(Action):
         # pid==None:     not update
         # pid==0:        Clear
         # retcode==None: Clear
-        path_status = self.__path_nodes_status_folder / f'{self.name}.status'
-        path_pid = self.__path_nodes_status_folder / f'{self.name}.pid'
-        path_retcode = self.__path_nodes_status_folder / f'{self.name}.retcode'
-        try:
-            with self.__lock_nodes_status:
-                with open(path_status, 'w') as f:
-                    f.write(str(status))
-                with open(path_pid, 'w') as f:
-                    if pid is None:
-                        pass
-                    elif pid==0:
-                        f.write('')
-                    else:
-                        f.write(str(pid))
-                with open(path_retcode, 'w') as f:
-                    if retcode is None:
-                        f.write('')
-                    else:
-                        f.write(str(retcode))
-        except filelock.Timeout:
-            self.__logger.warn('Node status lock file is locked (possible deadlock).')
+        if self.__write_status_file:
+            path_status = self.__path_nodes_status_folder / f'{self.name}.status'
+            path_pid = self.__path_nodes_status_folder / f'{self.name}.pid'
+            path_retcode = self.__path_nodes_status_folder / f'{self.name}.retcode'
+            try:
+                with self.__lock_nodes_status:
+                    with open(path_status, 'w') as f:
+                        f.write(str(status))
+                    with open(path_pid, 'w') as f:
+                        if pid is None:
+                            pass
+                        elif pid==0:
+                            f.write('')
+                        else:
+                            f.write(str(pid))
+                    with open(path_retcode, 'w') as f:
+                        if retcode is None:
+                            f.write('')
+                        else:
+                            f.write(str(retcode))
+            except filelock.Timeout:
+                self.__logger.warn('Node status lock file is locked (possible deadlock).')
 
     class __ProcessProtocol(AsyncSubprocessProtocol):
         def __init__(
