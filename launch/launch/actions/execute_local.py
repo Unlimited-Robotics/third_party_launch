@@ -110,6 +110,9 @@ class ExecuteLocal(Action):
         respawn_longterm_delay: float = 0.0,
         respawn_attempt_timeout: float = 0.0,
         affects_health: bool = True,
+        logs_to_ignore: List[str] = [],
+        logs_with_min_period: Dict[str, float] = {},
+        logs_to_stop: List[Tuple[str, int, float]] = {},
         **kwargs
     ) -> None:
         """
@@ -226,6 +229,11 @@ class ExecuteLocal(Action):
         self.__sigkill_timer = None  # type: Optional[TimerAction]
         self.__stdout_buffer = io.StringIO()
         self.__stderr_buffer = io.StringIO()
+
+        self.__logs_to_ignore = logs_to_ignore
+        self.__logs_with_min_period = logs_with_min_period
+        self.__logs_last_time = dict.fromkeys(self.__logs_with_min_period.keys(), 0.0)
+        self.__logs_to_stop = logs_to_stop
 
         self.__executed = False
         self.__affects_health = affects_health
@@ -379,8 +387,35 @@ class ExecuteLocal(Action):
         to_write_buffer = []
         for line in to_write_split:
             line_strip = line.strip()
-            if line_strip and (line_strip!='\x1b[0m'):
-                to_write_buffer.append(line_strip + '\x1b[0m')
+
+            ## Ignore lines cases
+
+            # Empty line
+            if not line_strip:
+                continue
+            
+            # Color control sequence
+            if line_strip=='\x1b[0m':
+                continue
+
+            # Ignored ones
+            if any(item in line_strip for item in self.__logs_to_ignore):
+                continue
+
+            # High period ones
+            ignore_line = False
+            for item in self.__logs_with_min_period:                
+                if item in line:
+                    if time.time() > (self.__logs_last_time[item] + self.__logs_with_min_period[item]):
+                        self.__logs_last_time[item] = time.time()
+                    else:
+                        ignore_line = True
+                        break
+            if ignore_line:
+                continue
+
+            ## Not ignored lines are printed
+            to_write_buffer.append(line_strip + '\x1b[0m')
 
         for line in to_write_buffer:
             logger.info(
