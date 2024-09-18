@@ -372,52 +372,68 @@ class ExecuteLocal(Action):
         self, event: ProcessIO, buffer: io.TextIOBase, logger: logging.Logger
     ) -> Optional[SomeActionsType]:
         to_write = event.text.decode(errors='replace')
-        if buffer.closed:
-            # buffer was probably closed by __flush_buffers on shutdown.  Output without
-            # buffering.
-            buffer.info(
-                self.__output_format.format(line=to_write, this=self)
+        to_write_split = to_write.split('\r')
+
+        to_write_buffer = []
+        for line in to_write_split:
+            line_strip = line.strip()
+            if line_strip and (line_strip!='\x1b[0m'):
+                to_write_buffer.append(line_strip + '\x1b[0m')
+
+        for line in to_write_buffer:
+            logger.info(
+                self.__output_format.format(line=line, this=self)
             )
-        else:
-            buffer.write(to_write)
-            buffer.seek(0)
-            last_line = None
-            for line in buffer:
-                if line.endswith(os.linesep):
-                    logger.info(
-                        self.__output_format.format(line=line[:-len(os.linesep)], this=self)
-                    )
-                else:
-                    last_line = line
-                    break
-            buffer.seek(0)
-            buffer.truncate(0)
-            if last_line is not None:
-                buffer.write(last_line)
+
+        # if buffer.closed:
+        #     # buffer was probably closed by __flush_buffers on shutdown.  Output without
+        #     # buffering.
+        #     for line in to_write_buffer:
+        #         buffer.info(
+        #             self.__output_format.format(line=line, this=self)
+        #         )
+        # else:
+        #     for line in to_write_buffer:
+        #         buffer.write(line)
+        #     buffer.seek(0)
+        #     last_line = None
+        #     for line in buffer:
+        #         if line.endswith(os.linesep):
+        #             logger.info(
+        #                 self.__output_format.format(line=line[:-len(os.linesep)], this=self)
+        #             )
+        #         else:
+        #             last_line = line
+        #             break
+        #     buffer.seek(0)
+        #     buffer.truncate(0)
+        #     if last_line is not None:
+        #         buffer.write(last_line)
 
     def __flush_buffers(self, event, context):
-        line = self.__stdout_buffer.getvalue()
-        if line != '':
-            self.__stdout_logger.info(
-                self.__output_format.format(line=line, this=self)
-            )
+        pass
+        # line = self.__stdout_buffer.getvalue()
+        # if line != '':
+        #     self.__stdout_logger.info(
+        #         self.__output_format.format(line=line, this=self)
+        #     )
 
-        line = self.__stderr_buffer.getvalue()
-        if line != '':
-            self.__stderr_logger.info(
-                self.__output_format.format(line=line, this=self)
-            )
+        # line = self.__stderr_buffer.getvalue()
+        # if line != '':
+        #     self.__stderr_logger.info(
+        #         self.__output_format.format(line=line, this=self)
+        #     )
 
-        # the respawned process needs to reuse these StringIO resources,
-        # close them only after receiving the shutdown
-        if self.__shutdown_future is None or self.__shutdown_future.done():
-            self.__stdout_buffer.close()
-            self.__stderr_buffer.close()
-        else:
-            self.__stdout_buffer.seek(0)
-            self.__stdout_buffer.truncate(0)
-            self.__stderr_buffer.seek(0)
-            self.__stderr_buffer.truncate(0)
+        # # the respawned process needs to reuse these StringIO resources,
+        # # close them only after receiving the shutdown
+        # if self.__shutdown_future is None or self.__shutdown_future.done():
+        #     self.__stdout_buffer.close()
+        #     self.__stderr_buffer.close()
+        # else:
+        #     self.__stdout_buffer.seek(0)
+        #     self.__stdout_buffer.truncate(0)
+        #     self.__stderr_buffer.seek(0)
+        #     self.__stderr_buffer.truncate(0)
 
     def __on_process_output_cached(
         self, event: ProcessIO, buffer, logger
