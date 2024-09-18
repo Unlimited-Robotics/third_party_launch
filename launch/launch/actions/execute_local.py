@@ -107,6 +107,7 @@ class ExecuteLocal(Action):
         respawn: Union[bool, SomeSubstitutionsType] = False,
         respawn_delay: Optional[float] = None,
         respawn_attempts: int = 0,
+        respawn_longterm_delay: float = 0.0,
         respawn_attempt_timeout: float = 0.0,
         affects_health: bool = True,
         **kwargs
@@ -214,6 +215,7 @@ class ExecuteLocal(Action):
         self.__respawn_remaining_attempts = self.__respawn_attempts
         self.__respawn_attempt_timeout = respawn_attempt_timeout
         self.__respawn_last_time = time.time()
+        self.__respawn_longterm_delay = respawn_longterm_delay
 
         self.__process_event_args = None  # type: Optional[Dict[Text, Any]]
         self._subprocess_protocol = None  # type: Optional[Any]
@@ -674,23 +676,32 @@ class ExecuteLocal(Action):
                     self.__respawn_last_time = time.time()
                     self.__respawn_remaining_attempts -= 1
                     if self.__respawn_remaining_attempts == 0:
-                        self.__logger.error(f'Process failed after {self.__respawn_attempts} attempts')
-                        self.__respawn = False
-                        self.__cleanup()
-                        return
+                        if self.__respawn_longterm_delay > 0.0:
+                            self.__logger.error(f'Process failed after {self.__respawn_attempts} attempts')
+                            self.__respawn_remaining_attempts = self.__respawn_attempts
+                            respawn_delay = self.__respawn_longterm_delay    
+                        else:
+                            self.__logger.error(f'Process failed after {self.__respawn_attempts} attempts')
+                            self.__respawn = False
+                            self.__cleanup()
+                            return
                     else:
                         self.__logger.error('Process finished unexpectedly')
-                        self.__logger.error(f'Remaining attempts: {self.__respawn_remaining_attempts}')
-                        self.__logger.error('Respawning...')
+                        self.__logger.warning(f'Remaining attempts: {self.__respawn_remaining_attempts}')
+                        respawn_delay = self.__respawn_delay
+                    
+                    self.__logger.warning(f'Respawning in {respawn_delay} seconds')
 
                 # wait for a timeout(`self.__respawn_delay`) to respawn the process
                 # and handle shutdown event with future(`self.__shutdown_future`)
                 # to make sure `ros2 launch` exit in time
                 await asyncio.wait(
                     (self.__shutdown_future,),
-                    timeout=self.__respawn_delay
+                    timeout=respawn_delay,
                 )
+
             if not self.__shutdown_future.done():
+                self.__logger.warning(f'Respawning...')
                 context.asyncio_loop.create_task(self.__execute_process(context))
                 return
 
