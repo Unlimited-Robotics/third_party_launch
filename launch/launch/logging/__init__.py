@@ -18,6 +18,7 @@ import codecs
 import datetime
 import locale
 import logging
+import colorama
 import logging.handlers
 
 import os
@@ -186,13 +187,13 @@ class LaunchConfig:
         """
         if screen_format is not None:
             if screen_format == 'default':
-                screen_format = '[{levelname}] [{name}]: {msg}'
+                screen_format = '[LAUNCH {levelname}] [{name}.launch]: {msg}'
                 if screen_style is not None:
                     raise ValueError(
                         'Cannot set a custom format style for the "default" screen format.'
                     )
             if screen_format == 'default_with_timestamp':
-                screen_format = '{created:.7f} [{levelname}] [{name}]: {msg}'
+                screen_format = '[LAUNCH {levelname}] [{name}.launch] {created:.9f} {msg}'
                 if screen_style is not None:
                     raise ValueError(
                         'Cannot set a custom format style for the '
@@ -200,7 +201,22 @@ class LaunchConfig:
                     )
             if screen_style is None:
                 screen_style = '{'
-            self.screen_formatter = logging.Formatter(
+
+            class ColoredFormatter(logging.Formatter):
+                COLORS = {
+                    'DEBUG': colorama.Fore.CYAN,
+                    'INFO': colorama.Fore.GREEN,
+                    'WARNING': colorama.Fore.YELLOW,
+                    'ERROR': colorama.Fore.RED,
+                    'CRITICAL': colorama.Fore.RED + colorama.Style.BRIGHT
+                }
+
+                def format(self, record):
+                    color = self.COLORS.get(record.levelname, colorama.Fore.WHITE)
+                    reset = colorama.Style.RESET_ALL
+                    return f"{color}{super().format(record)}{reset}"
+
+            self.screen_formatter = ColoredFormatter(
                 screen_format, style=screen_style
             )
             if self.screen_handler is not None:
