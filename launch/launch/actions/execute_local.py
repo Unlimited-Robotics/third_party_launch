@@ -15,6 +15,7 @@
 """Module for the ExecuteLocal action."""
 
 import os
+import time
 import asyncio
 import io
 import logging
@@ -105,6 +106,8 @@ class ExecuteLocal(Action):
         ]] = None,
         respawn: Union[bool, SomeSubstitutionsType] = False,
         respawn_delay: Optional[float] = None,
+        respawn_attempts: int = 0,
+        respawn_attempt_timeout: float = 0.0,
         affects_health: bool = True,
         **kwargs
     ) -> None:
@@ -207,6 +210,10 @@ class ExecuteLocal(Action):
         self.__on_exit = on_exit
         self.__respawn = normalize_typed_substitution(respawn, bool)
         self.__respawn_delay = respawn_delay
+        self.__respawn_attempts = respawn_attempts
+        self.__respawn_remaining_attempts = self.__respawn_attempts
+        self.__respawn_attempt_timeout = respawn_attempt_timeout
+        self.__respawn_last_time = time.time()
 
         self.__process_event_args = None  # type: Optional[Dict[Text, Any]]
         self._subprocess_protocol = None  # type: Optional[Any]
@@ -630,7 +637,10 @@ class ExecuteLocal(Action):
         returncode = await self._subprocess_protocol.complete
         self._update_node_status('STOPPED', retcode=returncode)
         if returncode == 0:
-            self.__logger.info('process has finished cleanly [pid {}]'.format(pid))
+            if self.__respawn:
+                self.__logger.warning('process has finished [pid {}]'.format(pid))
+            else:
+                self.__logger.info('process has finished cleanly [pid {}]'.format(pid))
         else:
             self.__logger.error("process has died [pid {}, exit code {}, cmd '{}'].".format(
                 pid, returncode, ' '.join(filter(lambda part: part.strip(), cmd))
@@ -639,6 +649,24 @@ class ExecuteLocal(Action):
         # respawn the process if necessary
         if not context.is_shutdown and not self.__shutdown_future.done() and self.__respawn:
             if self.__respawn_delay is not None and self.__respawn_delay > 0.0:
+
+                # respawn attempts logic
+                if self.__respawn_attempts > 0:
+                    if (self.__respawn_attempt_timeout > 0.0) and \
+                            ((time.time() - self.__respawn_last_time) > self.__respawn_attempt_timeout):
+                        self.__respawn_remaining_attempts = self.__respawn_attempts
+                    self.__respawn_last_time = time.time()
+                    self.__respawn_remaining_attempts -= 1
+                    if self.__respawn_remaining_attempts == 0:
+                        self.__logger.error(f'Process failed after {self.__respawn_attempts} attempts')
+                        self.__respawn = False
+                        self.__cleanup()
+                        return
+                    else:
+                        self.__logger.error('Process finished unexpectedly')
+                        self.__logger.error(f'Remaining attempts: {self.__respawn_remaining_attempts}')
+                        self.__logger.error('Respawning...')
+
                 # wait for a timeout(`self.__respawn_delay`) to respawn the process
                 # and handle shutdown event with future(`self.__shutdown_future`)
                 # to make sure `ros2 launch` exit in time
@@ -649,6 +677,7 @@ class ExecuteLocal(Action):
             if not self.__shutdown_future.done():
                 context.asyncio_loop.create_task(self.__execute_process(context))
                 return
+
         self.__cleanup()
 
     def prepare(self, context: LaunchContext):
