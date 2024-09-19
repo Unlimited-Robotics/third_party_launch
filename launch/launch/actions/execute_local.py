@@ -112,7 +112,7 @@ class ExecuteLocal(Action):
         affects_health: bool = True,
         logs_to_ignore: List[str] = [],
         logs_with_min_period: Dict[str, float] = {},
-        logs_to_stop: List[Tuple[str, int, float]] = {},
+        logs_to_stop: Dict[str, Tuple[int, float]] = {},
         **kwargs
     ) -> None:
         """
@@ -234,6 +234,9 @@ class ExecuteLocal(Action):
         self.__logs_with_min_period = logs_with_min_period
         self.__logs_last_time = dict.fromkeys(self.__logs_with_min_period.keys(), 0.0)
         self.__logs_to_stop = logs_to_stop
+        self.__logs_to_stop_first_time = dict.fromkeys(self.__logs_to_stop.keys(), 0.0)
+        self.__logs_to_stop_couter = dict.fromkeys(self.__logs_to_stop.keys(), 0.0)
+        self.__logs_terminating = False
 
         self.__executed = False
         self.__affects_health = affects_health
@@ -379,11 +382,17 @@ class ExecuteLocal(Action):
         return None
 
     def __on_process_output(
-        self, event: ProcessIO, buffer: io.TextIOBase, logger: logging.Logger
-    ) -> Optional[SomeActionsType]:
+                self, 
+                event: ProcessIO, 
+                buffer: io.TextIOBase, 
+                logger: logging.Logger,
+                context: LaunchContext,
+            ) -> Optional[SomeActionsType]:
         to_write = event.text.decode(errors='replace')
         to_write_split = to_write.split('\r')
 
+        stop_process = False
+        line_stop = ''
         to_write_buffer = []
         for line in to_write_split:
             line_strip = line.strip()
@@ -402,9 +411,29 @@ class ExecuteLocal(Action):
             if any(item in line_strip for item in self.__logs_to_ignore):
                 continue
 
+            # Lines to stop
+            for item in self.__logs_to_stop:
+                if (not self.__logs_terminating) and (item in line):
+                    if self.__logs_to_stop[item][0]<=1 or self.__logs_to_stop[item][1]<=0.0:
+                        stop_process = True
+                        line_stop = item
+                        break
+                    else:
+                        if time.time() < self.__logs_to_stop_first_time[item] + self.__logs_to_stop[item][1]:
+                            self.__logs_to_stop_couter[item] += 1
+                        else:
+                            self.__logs_to_stop_first_time[item] = time.time()
+                            self.__logs_to_stop_couter[item] = 0
+                        if self.__logs_to_stop_couter[item] >= (self.__logs_to_stop[item][0]-1):
+                            self.__logs_to_stop_couter[item] = 0
+                            self.__logs_to_stop_first_time[item] = 0.0
+                            stop_process = True
+                            line_stop = item
+                            break
+
             # High period ones
             ignore_line = False
-            for item in self.__logs_with_min_period:                
+            for item in self.__logs_with_min_period:
                 if item in line:
                     if time.time() > (self.__logs_last_time[item] + self.__logs_with_min_period[item]):
                         self.__logs_last_time[item] = time.time()
@@ -421,6 +450,19 @@ class ExecuteLocal(Action):
             logger.info(
                 self.__output_format.format(line=line, this=self)
             )
+
+        if stop_process:
+            self.__logs_terminating = True
+            if self.__logs_to_stop[line_stop][0]<=1 or self.__logs_to_stop[line_stop][1]<=0.0:
+                self.__logger.warning(f'Log \'{line_stop}\' was detected, the process will be halted')
+            else:
+                self.__logger.warning(
+                    f'Log \'{line_stop}\' was detected more than '
+                    f'{self.__logs_to_stop[line_stop][0]} times in less than '
+                    f'{self.__logs_to_stop[line_stop][1]} seconds, the '
+                    'process will be halted'
+                )
+            context.asyncio_loop.create_task(self.__finish_process(context))
 
         # if buffer.closed:
         #     # buffer was probably closed by __flush_buffers on shutdown.  Output without
@@ -703,6 +745,8 @@ class ExecuteLocal(Action):
         if not context.is_shutdown and not self.__shutdown_future.done() and self.__respawn:
             if self.__respawn_delay is not None and self.__respawn_delay > 0.0:
 
+                self.__logs_terminating = False
+
                 # respawn attempts logic
                 if self.__respawn_attempts > 0:
                     if (self.__respawn_attempt_timeout > 0.0) and \
@@ -741,6 +785,15 @@ class ExecuteLocal(Action):
                 return
 
         self.__cleanup()
+
+    async def __finish_process(self, context: LaunchContext) -> None:
+        original_pid = self._subprocess_transport.get_pid()
+        self.__logger.warning(f'Terminating process...')
+        self._subprocess_transport.terminate()
+        await asyncio.sleep(10.0)
+        if self._subprocess_transport.get_pid() == original_pid:
+            self.__logger.warning(f'Killing process...')
+            self._subprocess_transport.kill()
 
     def prepare(self, context: LaunchContext):
         """Prepare the action for execution."""
@@ -802,9 +855,9 @@ class ExecuteLocal(Action):
                 target_action=self,
                 on_stdin=self.__on_process_stdin,
                 on_stdout=lambda event: on_output_method(
-                    event, self.__stdout_buffer, self.__stdout_logger),
+                    event, self.__stdout_buffer, self.__stdout_logger, context),
                 on_stderr=lambda event: on_output_method(
-                    event, self.__stderr_buffer, self.__stderr_logger),
+                    event, self.__stderr_buffer, self.__stderr_logger, context),
             ),
             OnShutdown(
                 on_shutdown=self.__on_shutdown,
