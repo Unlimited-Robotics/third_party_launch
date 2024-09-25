@@ -770,6 +770,8 @@ class ExecuteLocal(Action):
                         respawn_delay = self.__respawn_delay
                     
                     self.__logger.warning(f'Respawning in {respawn_delay} seconds')
+                else:
+                    respawn_delay = self.__respawn_delay
 
                 # wait for a timeout(`self.__respawn_delay`) to respawn the process
                 # and handle shutdown event with future(`self.__shutdown_future`)
